@@ -1,0 +1,54 @@
+classDiagram
+    class Owner {
+        +String owner_id
+        +String name
+        +String email
+        +List~Pet~ pets
+        +add_pet(name, species, age)
+        +remove_pet(pet_id)
+        +get_pet(pet_id)
+    }
+
+    class Pet {
+        +String pet_id
+        +String name
+        +String species
+        +int age
+        +String breed
+        +String notes
+        +List~Task~ tasks
+        +add_task(task)
+        +remove_task(task_id)
+        +get_due_today()
+    }
+
+    class Task {
+        +String task_id
+        +String task_type
+        +DateTime due_datetime
+        +int priority
+        +bool is_recurring
+        +Duration recur_interval
+        +bool completed
+        +String notes
+        +__lt__(other)
+        +next_occurrence()
+        +mark_complete()
+    }
+
+    class Scheduler {
+        +List~Owner~ owners
+        +PriorityQueue~Task~ task_heap
+        +register_owner(owner)
+        +add_task(owner_id, pet_id, task)
+        +remove_task(owner_id, pet_id, task_id)
+        +get_tasks_for_today(owner_id)
+        +check_conflict(task)
+        +generate_recurring_tasks()
+        +get_overdue_tasks(owner_id)
+    }
+
+    Owner "1" o-- "*" Pet : owns
+    Pet "1" o-- "*" Task : has
+    Scheduler "1" ..> Owner : manages
+    Scheduler "1" ..> Task : schedules
