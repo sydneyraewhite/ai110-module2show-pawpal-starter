@@ -17,6 +17,10 @@ class Task:
     completed: bool = False
     notes: str = ""
     pet: Optional["Pet"] = field(default=None, repr=False, compare=False)
+    # per-task allowed scheduling window (start_hour, end_hour) inclusive
+    allowed_time_window: Optional[tuple[int, int]] = None
+    # list of blackout periods where this task cannot be scheduled: (start_dt, end_dt)
+    blackout_periods: List[tuple[datetime, datetime]] = field(default_factory=list)
 
     def __lt__(self, other: "Task") -> bool:
         if self.priority != other.priority:
@@ -99,6 +103,7 @@ class Scheduler:
     def __init__(self) -> None:
         self.owners: List[Owner] = []
         self.task_heap: List[Task] = []
+        self.event_log: List[dict] = []
 
     def register_owner(self, owner: Owner) -> None:
         if owner not in self.owners:
@@ -188,17 +193,33 @@ class Scheduler:
 
             attempts = 0
             while attempts < max_attempts:
-                target.due_datetime = target.due_datetime + delta
+                old_dt = target.due_datetime
+                new_dt = old_dt + delta
 
                 # respect owner's preferred time window if set
                 if owner.preferred_time_window is not None:
                     start_h, end_h = owner.preferred_time_window
-                    h = target.due_datetime.hour
-                    m = target.due_datetime.minute
-                    # allow times from start_h:00 up to end_h:00 exactly; any minutes past end_h are outside
+                    h = new_dt.hour
+                    m = new_dt.minute
                     if h < start_h or h > end_h or (h == end_h and m > 0):
-                        # outside allowed window, cannot move further
                         return False
+
+                # respect target task's allowed_time_window if set
+                if target.allowed_time_window is not None:
+                    start_h, end_h = target.allowed_time_window
+                    h = new_dt.hour
+                    m = new_dt.minute
+                    if h < start_h or h > end_h or (h == end_h and m > 0):
+                        return False
+
+                # respect task blackout periods
+                in_blackout = False
+                for (bstart, bend) in target.blackout_periods:
+                    if bstart <= new_dt <= bend:
+                        in_blackout = True
+                        break
+                if in_blackout:
+                    return False
 
                 # check for collision at new slot
                 conflict_still = False
@@ -206,7 +227,7 @@ class Scheduler:
                     for other in pet2.tasks:
                         if other is target or other.completed:
                             continue
-                        if other.due_datetime == target.due_datetime:
+                        if other.due_datetime == new_dt:
                             conflict_still = True
                             break
                     if conflict_still:
@@ -214,9 +235,20 @@ class Scheduler:
 
                 attempts += 1
                 if not conflict_still:
+                    # apply the move
+                    target.due_datetime = new_dt
                     # if we moved an existing task, the heap needs reordering
                     if move_existing:
                         heapq.heapify(self.task_heap)
+
+                    # log the automatic resolution event
+                    self.event_log.append({
+                        "type": "auto_reschedule",
+                        "task_id": target.task_id,
+                        "from": old_dt.isoformat(),
+                        "to": new_dt.isoformat(),
+                        "moved_existing": move_existing,
+                    })
                     return True
 
             # couldn't resolve this conflict
