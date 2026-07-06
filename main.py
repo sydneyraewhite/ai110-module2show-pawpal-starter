@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from pawpal_system import Owner, Pet, Scheduler, Task
 
@@ -96,6 +96,14 @@ def main() -> None:
     for task in scheduler.sort_by_time(all_tasks):
         print(show(task))
 
+    print("\nSorted by Priority (then time)")
+    print("==============================")
+    for task in scheduler.sort_by_priority(all_tasks):
+        print(
+            f"- {task.priority_label:<6} | {task.due_datetime.strftime('%H:%M')} | "
+            f"{task.pet.name if task.pet else 'Unknown'} | {task.task_type}"
+        )
+
     print("\nSorted Time Strings")
     print("===================")
     time_strings = [task.due_datetime.strftime("%H:%M") for task in all_tasks]
@@ -126,6 +134,16 @@ def main() -> None:
             print(warning)
     else:
         print("No conflicts detected.")
+
+    print("\nNext Available Slot")
+    print("===================")
+    # 07:00 is double-booked; suggest the next free slot from 07:00 onward.
+    for desired in (datetime(2026, 7, 6, 7, 0), datetime(2026, 7, 6, 14, 0)):
+        slot = scheduler.find_next_available_slot(
+            owner.owner_id, desired, step=timedelta(minutes=15)
+        )
+        found = slot.strftime("%H:%M") if slot else "none within 24h"
+        print(f"- want {desired.strftime('%H:%M')} -> next free {found}")
 
 
 if __name__ == "__main__":

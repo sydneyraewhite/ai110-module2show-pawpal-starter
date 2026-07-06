@@ -171,15 +171,63 @@ if st.button("Add task"):
 owner_key = owner_name.strip().lower().replace(" ", "_") or None
 owner_obj = get_owner(owner_key)
 if owner_obj is not None:
-    st.write(f"Tasks for {owner_obj.name}:")
-    tasks = [
-        {"id": t.task_id, "title": t.task_type, "due": t.due_datetime.isoformat(), "priority": t.priority}
-        for t in owner_obj.get_all_tasks()
-    ]
-    if tasks:
-        st.table(tasks)
+    scheduler = get_scheduler()
+    scheduler.register_owner(owner_obj)
+
+    st.markdown(f"### 📋 Tasks for {owner_obj.name}")
+
+    all_tasks = owner_obj.get_all_tasks()
+    conflicts = scheduler.conflict_warnings(owner_obj.owner_id)
+
+    # At-a-glance summary metrics
+    mcol1, mcol2, mcol3, mcol4 = st.columns(4)
+    mcol1.metric("Total", len(all_tasks))
+    mcol2.metric("Pending", len(scheduler.filter_tasks(all_tasks, completed=False)))
+    mcol3.metric("Completed", len(scheduler.filter_tasks(all_tasks, completed=True)))
+    mcol4.metric("Conflicts", len(conflicts))
+
+    # Filter controls wired to Scheduler.filter_tasks
+    fcol1, fcol2 = st.columns(2)
+    with fcol1:
+        status_filter = st.selectbox("Status", ["All", "Pending", "Completed"])
+    with fcol2:
+        pet_options = ["All pets"] + [pet.name for pet in owner_obj.pets]
+        pet_filter = st.selectbox("Pet", pet_options)
+
+    completed_arg = {"All": None, "Pending": False, "Completed": True}[status_filter]
+    pet_name_arg = None if pet_filter == "All pets" else pet_filter
+
+    # Filter, then sort chronologically using the Scheduler's own methods
+    filtered = scheduler.filter_tasks(
+        all_tasks, completed=completed_arg, pet_name=pet_name_arg
+    )
+    ordered = scheduler.sort_by_time(filtered)
+
+    priority_labels = {1: "🔴 High", 2: "🟡 Medium", 3: "🟢 Low"}
+
+    if ordered:
+        st.caption(f"Showing {len(ordered)} of {len(all_tasks)} tasks, sorted by time.")
+        st.table(
+            [
+                {
+                    "Time": t.due_datetime.strftime("%b %d, %H:%M"),
+                    "Pet": t.pet.name if t.pet else "—",
+                    "Task": t.task_type,
+                    "Priority": priority_labels.get(t.priority, str(t.priority)),
+                    "Status": "✅ Done" if t.completed else "⏳ Pending",
+                }
+                for t in ordered
+            ]
+        )
     else:
-        st.info("No tasks for this owner yet.")
+        st.info("No tasks match the current filters.")
+
+    # Surface same-time clashes as non-blocking warnings
+    if conflicts:
+        for warning in conflicts:
+            st.warning(f"⚠️ {warning}")
+    elif all_tasks:
+        st.success("✅ No scheduling conflicts detected.")
 elif st.session_state.tasks:
     st.write("Current tasks (unsaved):")
     st.table(st.session_state.tasks)
@@ -189,18 +237,40 @@ else:
 st.divider()
 
 st.subheader("Build Schedule")
-st.caption("This button should call your scheduling logic once you implement it.")
+st.caption("Generates an ordered plan of upcoming tasks using your Scheduler.")
 
 if st.button("Generate schedule"):
-    st.warning(
-        "Not implemented yet. Next step: create your scheduling logic (classes/functions) and call it here."
-    )
-    st.markdown(
-        """
-Suggested approach:
-1. Design your UML (draft).
-2. Create class stubs (no logic).
-3. Implement scheduling behavior.
-4. Connect your scheduler here and display results.
-"""
-    )
+    owner_key = owner_name.strip().lower().replace(" ", "_") or None
+    owner_obj = get_owner(owner_key)
+    if owner_obj is None:
+        st.info("Add a pet and some tasks first.")
+    else:
+        scheduler = get_scheduler()
+        scheduler.register_owner(owner_obj)
+
+        # Ordered by time, then priority; completed tasks are excluded
+        upcoming = scheduler.get_upcoming_tasks(owner_obj.owner_id, limit=10)
+        priority_labels = {1: "🔴 High", 2: "🟡 Medium", 3: "🟢 Low"}
+        if upcoming:
+            st.success(f"📅 Generated a plan with {len(upcoming)} upcoming task(s).")
+            st.table(
+                [
+                    {
+                        "Time": t.due_datetime.strftime("%b %d, %H:%M"),
+                        "Pet": t.pet.name if t.pet else "—",
+                        "Task": t.task_type,
+                        "Priority": priority_labels.get(t.priority, str(t.priority)),
+                    }
+                    for t in upcoming
+                ]
+            )
+        else:
+            st.info("No pending tasks to schedule.")
+
+        # Report any scheduling conflicts without blocking the plan
+        warnings = scheduler.conflict_warnings(owner_obj.owner_id)
+        if warnings:
+            for warning in warnings:
+                st.warning(f"⚠️ {warning}")
+        else:
+            st.success("✅ No scheduling conflicts detected.")

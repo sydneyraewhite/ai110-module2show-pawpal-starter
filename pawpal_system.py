@@ -1,9 +1,22 @@
 from __future__ import annotations
 
 import heapq
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from enum import IntEnum
 from typing import List, Optional
+
+
+class Priority(IntEnum):
+    """Task priority levels; lower value == higher importance.
+
+    Subclasses int so existing numeric priorities (1/2/3) remain fully
+    compatible: Priority.HIGH == 1, and tasks sort High -> Medium -> Low.
+    """
+    HIGH = 1
+    MEDIUM = 2
+    LOW = 3
 
 
 def _clamp_into_window(dt: datetime, window: Optional[tuple[int, int]]) -> datetime:
@@ -41,6 +54,14 @@ class Task:
     allowed_time_window: Optional[tuple[int, int]] = None
     # list of blackout periods where this task cannot be scheduled: (start_dt, end_dt)
     blackout_periods: List[tuple[datetime, datetime]] = field(default_factory=list)
+
+    @property
+    def priority_label(self) -> str:
+        """Human-readable priority name: High, Medium, or Low."""
+        try:
+            return Priority(self.priority).name.title()
+        except ValueError:
+            return str(self.priority)
 
     def __lt__(self, other: "Task") -> bool:
         """Compare tasks by priority, due time, then id."""
@@ -181,6 +202,100 @@ class Owner:
         return [task for task in self.get_all_tasks() if not task.completed]
 
 
+def _task_to_dict(task: Task) -> dict:
+    """Serialize a Task into a JSON-safe dict (datetimes -> ISO strings)."""
+    return {
+        "task_id": task.task_id,
+        "task_type": task.task_type,
+        "due_datetime": task.due_datetime.isoformat(),
+        "priority": task.priority,
+        "description": task.description,
+        "is_recurring": task.is_recurring,
+        "recur_interval": task.recur_interval.total_seconds() if task.recur_interval else None,
+        "completed": task.completed,
+        "notes": task.notes,
+        "frequency": task.frequency,
+        "allowed_time_window": list(task.allowed_time_window) if task.allowed_time_window else None,
+        "blackout_periods": [[s.isoformat(), e.isoformat()] for s, e in task.blackout_periods],
+    }
+
+
+def _task_from_dict(data: dict) -> Task:
+    """Reconstruct a Task from its serialized dict form."""
+    recur = data.get("recur_interval")
+    window = data.get("allowed_time_window")
+    return Task(
+        task_id=data["task_id"],
+        task_type=data["task_type"],
+        due_datetime=datetime.fromisoformat(data["due_datetime"]),
+        priority=data["priority"],
+        description=data.get("description", ""),
+        is_recurring=data.get("is_recurring", False),
+        recur_interval=timedelta(seconds=recur) if recur is not None else None,
+        completed=data.get("completed", False),
+        notes=data.get("notes", ""),
+        frequency=data.get("frequency"),
+        allowed_time_window=tuple(window) if window else None,
+        blackout_periods=[
+            (datetime.fromisoformat(s), datetime.fromisoformat(e))
+            for s, e in data.get("blackout_periods", [])
+        ],
+    )
+
+
+def _pet_to_dict(pet: Pet) -> dict:
+    """Serialize a Pet (and its tasks) into a JSON-safe dict."""
+    return {
+        "pet_id": pet.pet_id,
+        "name": pet.name,
+        "species": pet.species,
+        "age": pet.age,
+        "breed": pet.breed,
+        "notes": pet.notes,
+        "tasks": [_task_to_dict(task) for task in pet.tasks],
+    }
+
+
+def _pet_from_dict(data: dict) -> Pet:
+    """Reconstruct a Pet from its serialized dict, restoring task back-refs."""
+    pet = Pet(
+        pet_id=data["pet_id"],
+        name=data["name"],
+        species=data["species"],
+        age=data["age"],
+        breed=data.get("breed", ""),
+        notes=data.get("notes", ""),
+    )
+    for task_data in data.get("tasks", []):
+        pet.add_task(_task_from_dict(task_data))
+    return pet
+
+
+def _owner_to_dict(owner: Owner) -> dict:
+    """Serialize an Owner (and its pets) into a JSON-safe dict."""
+    return {
+        "owner_id": owner.owner_id,
+        "name": owner.name,
+        "email": owner.email,
+        "preferred_time_window": list(owner.preferred_time_window) if owner.preferred_time_window else None,
+        "pets": [_pet_to_dict(pet) for pet in owner.pets],
+    }
+
+
+def _owner_from_dict(data: dict) -> Owner:
+    """Reconstruct an Owner from its serialized dict, restoring pet back-refs."""
+    window = data.get("preferred_time_window")
+    owner = Owner(
+        owner_id=data["owner_id"],
+        name=data["name"],
+        email=data["email"],
+        preferred_time_window=tuple(window) if window else None,
+    )
+    for pet_data in data.get("pets", []):
+        owner.add_pet(_pet_from_dict(pet_data))
+    return owner
+
+
 class Scheduler:
     def __init__(self) -> None:
         self.owners: List[Owner] = []
@@ -314,6 +429,15 @@ class Scheduler:
         """Return tasks sorted chronologically by their due_datetime."""
         return sorted(tasks, key=lambda task: task.due_datetime)
 
+    def sort_by_priority(self, tasks: List[Task]) -> List[Task]:
+        """Return tasks sorted by priority first (High -> Low), then by due time.
+
+        Since lower numeric priority means higher importance, ascending order
+        places High (1) before Medium (2) before Low (3); ties break by the
+        earlier due_datetime.
+        """
+        return sorted(tasks, key=lambda task: (task.priority, task.due_datetime))
+
     def sort_time_strings(self, times: List[str]) -> List[str]:
         """Return "HH:MM" time strings sorted chronologically.
 
@@ -407,6 +531,68 @@ class Scheduler:
                 f"Warning: {len(group)} tasks scheduled at {when} - {details}"
             )
         return warnings
+
+    def find_next_available_slot(
+        self,
+        owner_id: str,
+        desired_dt: datetime,
+        step: timedelta = timedelta(minutes=15),
+        max_slots: int = 96,
+        allowed_time_window: Optional[tuple[int, int]] = None,
+        blackout_periods: Optional[List[tuple[datetime, datetime]]] = None,
+    ) -> Optional[datetime]:
+        """Return the earliest free time at or after `desired_dt` for a new task.
+
+        Probes forward from `desired_dt` in `step` increments (default 15 min),
+        returning the first candidate that is (a) not already booked by a pending
+        task, (b) inside the owner's `preferred_time_window`, (c) inside the
+        optional `allowed_time_window`, and (d) outside every blackout period.
+        Returns `desired_dt` itself when it is already free, or None if no slot
+        is found within `max_slots` probes (default 96 = 24h at 15-min steps).
+
+        Unlike `resolve_conflict`, this is a read-only query: it mutates nothing
+        and is meant for suggesting a time before a task is created.
+        """
+        owner = self._find_owner(owner_id)
+        if owner is None:
+            return None
+
+        blackout_periods = blackout_periods or []
+        occupied = {
+            task.due_datetime
+            for pet in owner.pets
+            for task in pet.tasks
+            if not task.completed
+        }
+
+        candidate = desired_dt
+        for _ in range(max_slots):
+            in_blackout = any(bstart <= candidate <= bend for bstart, bend in blackout_periods)
+            if (
+                candidate not in occupied
+                and self._within_window(candidate, owner.preferred_time_window)
+                and self._within_window(candidate, allowed_time_window)
+                and not in_blackout
+            ):
+                return candidate
+            candidate += step
+        return None
+
+    def reschedule_weekly(self, task: Task, max_weeks: int = 8) -> Optional[datetime]:
+        """Return the next weekly occurrence that avoids blackouts and stays in-window.
+
+        Steps forward one week at a time from the task's `due_datetime`, clamping
+        each candidate into the task's `allowed_time_window` and skipping any that
+        fall inside a blackout period. Returns the first valid datetime, or None
+        if none is found within `max_weeks`. Read-only: does not modify the task.
+        """
+        candidate = task.due_datetime
+        for _ in range(max_weeks):
+            candidate = _clamp_into_window(candidate + timedelta(weeks=1), task.allowed_time_window)
+            in_blackout = any(start <= candidate <= end for start, end in task.blackout_periods)
+            if not in_blackout and self._within_window(candidate, task.allowed_time_window):
+                return candidate
+        return None
 
     @staticmethod
     def _within_window(dt: datetime, window: Optional[tuple[int, int]]) -> bool:
@@ -519,6 +705,42 @@ class Scheduler:
                 "due_datetime": next_task.due_datetime.isoformat(),
             })
         return resolved
+
+    def save_to_json(self, path: str = "data.json") -> None:
+        """Persist all owners, pets, tasks, and the event log to a JSON file.
+
+        Datetimes and timedeltas are serialized to ISO strings / seconds so the
+        graph can be fully reconstructed by `load_from_json`.
+        """
+        payload = {
+            "owners": [_owner_to_dict(owner) for owner in self.owners],
+            "event_log": self.event_log,
+        }
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+
+    def load_from_json(self, path: str = "data.json") -> bool:
+        """Load owners, pets, and tasks from a JSON file, rebuilding the heap.
+
+        Replaces the scheduler's current state with the file's contents and
+        re-pushes every task onto the priority heap. Returns False (leaving
+        state unchanged) when the file does not exist, so a first run with no
+        saved data starts cleanly.
+        """
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except FileNotFoundError:
+            return False
+
+        self.owners = [_owner_from_dict(owner) for owner in payload.get("owners", [])]
+        self.event_log = payload.get("event_log", [])
+        self.task_heap = []
+        for owner in self.owners:
+            for pet in owner.pets:
+                for task in pet.tasks:
+                    heapq.heappush(self.task_heap, task)
+        return True
 
     def _find_owner(self, owner_id: str) -> Optional[Owner]:
         return next((owner for owner in self.owners if owner.owner_id == owner_id), None)

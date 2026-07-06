@@ -1,0 +1,84 @@
+classDiagram
+    class Owner {
+        +str owner_id
+        +str name
+        +str email
+        +list~Pet~ pets
+        +tuple preferred_time_window
+        +add_pet(pet) None
+        +remove_pet(pet_id) None
+        +get_pet(pet_id) Pet
+        +get_all_tasks() list~Task~
+        +get_tasks_for_today() list~Task~
+        +get_all_pending_tasks() list~Task~
+    }
+
+    class Pet {
+        +str pet_id
+        +str name
+        +str species
+        +int age
+        +str breed
+        +str notes
+        +list~Task~ tasks
+        +Owner owner
+        +add_task(task) None
+        +remove_task(task_id) None
+        +get_due_today() list~Task~
+        +get_pending_tasks() list~Task~
+        +get_tasks_by_type(task_type) list~Task~
+    }
+
+    class Task {
+        +str task_id
+        +str task_type
+        +datetime due_datetime
+        +int priority
+        +str description
+        +bool is_recurring
+        +timedelta recur_interval
+        +bool completed
+        +str notes
+        +str frequency
+        +Pet pet
+        +tuple allowed_time_window
+        +list blackout_periods
+        +__lt__(other) bool
+        +next_occurrence() Task
+        +mark_complete() None
+        +is_overdue(now) bool
+    }
+
+    class Scheduler {
+        +list~Owner~ owners
+        +list~Task~ task_heap
+        +list~dict~ event_log
+        +register_owner(owner) None
+        +add_task(owner_id, pet_id, task) None
+        +remove_task(owner_id, pet_id, task_id) None
+        +complete_task(owner_id, pet_id, task_id) Task
+        +get_tasks_for_today(owner_id) list~Task~
+        +get_upcoming_tasks(owner_id, limit) list~Task~
+        +get_overdue_tasks(owner_id) list~Task~
+        +sort_by_time(tasks) list~Task~
+        +sort_time_strings(times) list~str~
+        +filter_tasks(tasks, completed, pet_name) list~Task~
+        +check_conflict(task, owner) bool
+        +find_conflicts(owner_id, include_completed) list
+        +has_conflicts(owner_id, include_completed) bool
+        +conflict_warnings(owner_id, include_completed) list~str~
+        +resolve_conflict(task, owner, max_attempts, delta) bool
+        +generate_recurring_tasks() None
+        -_within_window(dt, window) bool
+        -_schedule_spawn(owner, pet, next_task) bool
+        -_find_owner(owner_id) Owner
+    }
+
+    Owner "1" *-- "0..*" Pet : owns
+    Pet "1" *-- "0..*" Task : has
+    Pet "0..1" --> "1" Owner : back-ref
+    Task "0..1" --> "1" Pet : back-ref
+    Scheduler "1" o-- "0..*" Owner : registers
+    Scheduler ..> Task : heap holds refs
+    Scheduler ..> Pet : navigates & mutates
+    Task ..> Task : «creates» next_occurrence
