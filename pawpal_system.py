@@ -12,10 +12,12 @@ class Task:
     task_type: str
     due_datetime: datetime
     priority: int
+    description: str = ""
     is_recurring: bool = False
     recur_interval: Optional[timedelta] = None
     completed: bool = False
     notes: str = ""
+    frequency: Optional[str] = None
     pet: Optional["Pet"] = field(default=None, repr=False, compare=False)
     # per-task allowed scheduling window (start_hour, end_hour) inclusive
     allowed_time_window: Optional[tuple[int, int]] = None
@@ -38,14 +40,22 @@ class Task:
             task_type=self.task_type,
             due_datetime=self.due_datetime + self.recur_interval,
             priority=self.priority,
+            description=self.description,
             is_recurring=self.is_recurring,
             recur_interval=self.recur_interval,
             completed=False,
             notes=self.notes,
+            frequency=self.frequency,
+            allowed_time_window=self.allowed_time_window,
+            blackout_periods=list(self.blackout_periods),
         )
 
     def mark_complete(self) -> None:
         self.completed = True
+
+    def is_overdue(self, now: Optional[datetime] = None) -> bool:
+        current_time = now or datetime.now()
+        return not self.completed and self.due_datetime < current_time
 
 
 @dataclass
@@ -74,6 +84,12 @@ class Pet:
         today = datetime.now().date()
         return [task for task in self.tasks if task.due_datetime.date() == today]
 
+    def get_pending_tasks(self) -> List[Task]:
+        return [task for task in self.tasks if not task.completed]
+
+    def get_tasks_by_type(self, task_type: str) -> List[Task]:
+        return [task for task in self.tasks if task.task_type == task_type]
+
 
 @dataclass
 class Owner:
@@ -98,6 +114,25 @@ class Owner:
     def get_pet(self, pet_id: str) -> Optional[Pet]:
         return next((pet for pet in self.pets if pet.pet_id == pet_id), None)
 
+    def get_all_tasks(self) -> List[Task]:
+        all_tasks: List[Task] = []
+        for pet in self.pets:
+            all_tasks.extend(pet.tasks)
+        return all_tasks
+
+    def get_tasks_for_today(self) -> List[Task]:
+        today = datetime.now().date()
+        return [task for task in self.get_all_tasks() if task.due_datetime.date() == today]
+
+    def get_all_tasks(self) -> List[Task]:
+        tasks: List[Task] = []
+        for pet in self.pets:
+            tasks.extend(pet.tasks)
+        return tasks
+
+    def get_all_pending_tasks(self) -> List[Task]:
+        return [task for task in self.get_all_tasks() if not task.completed]
+
 
 class Scheduler:
     def __init__(self) -> None:
@@ -118,7 +153,6 @@ class Scheduler:
         if pet is None:
             raise ValueError(f"Pet {pet_id} not found for owner {owner_id}")
 
-        # Try to resolve conflicts automatically; if unable, raise.
         if self.check_conflict(task, owner):
             resolved = self.resolve_conflict(task, owner)
             if not resolved:
@@ -126,6 +160,13 @@ class Scheduler:
 
         pet.add_task(task)
         heapq.heappush(self.task_heap, task)
+        self.event_log.append({
+            "type": "task_added",
+            "task_id": task.task_id,
+            "pet_id": pet.pet_id,
+            "owner_id": owner.owner_id,
+            "due_datetime": task.due_datetime.isoformat(),
+        })
 
     def remove_task(self, owner_id: str, pet_id: str, task_id: str) -> None:
         owner = self._find_owner(owner_id)
@@ -137,6 +178,12 @@ class Scheduler:
             return
 
         pet.remove_task(task_id)
+        self.event_log.append({
+            "type": "task_removed",
+            "task_id": task_id,
+            "pet_id": pet.pet_id,
+            "owner_id": owner.owner_id,
+        })
 
     def get_tasks_for_today(self, owner_id: str) -> List[Task]:
         owner = self._find_owner(owner_id)
@@ -150,6 +197,25 @@ class Scheduler:
 
         tasks.sort(key=lambda task: task)
         return tasks
+
+    def get_upcoming_tasks(self, owner_id: str, limit: int = 5) -> List[Task]:
+        owner = self._find_owner(owner_id)
+        if owner is None:
+            return []
+
+        tasks = [task for task in owner.get_all_tasks() if not task.completed]
+        tasks.sort(key=lambda task: (task.due_datetime, task.priority))
+        return tasks[:limit]
+
+    def get_overdue_tasks(self, owner_id: str) -> List[Task]:
+        owner = self._find_owner(owner_id)
+        if owner is None:
+            return []
+
+        now = datetime.now()
+        overdue = [task for task in owner.get_all_tasks() if task.is_overdue(now)]
+        overdue.sort(key=lambda task: task)
+        return overdue
 
     def check_conflict(self, task: Task, owner: Optional[Owner] = None) -> bool:
         owner = owner or (task.pet.owner if task.pet is not None else None)
