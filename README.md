@@ -66,20 +66,49 @@ pytest --cov
 
 Sample test output:
 
-```
-# Paste your pytest output here
-```
+Ran terminal command:  python3 main.py
+
+Today's Schedule
+================
+- 12:30 | Nori | feed | Lunch feeding
+- 08:00 | Milo | walk | Morning walk
+- 18:00 | Milo | medication | Vet medicine
+
 
 ## 📐 Smarter Scheduling
 
-> Fill in once you've implemented scheduling logic.
+The scheduling logic lives in the `Scheduler` and `Task` classes in [`pawpal_system.py`](pawpal_system.py). This section documents each feature and the method that implements it.
 
 | Feature | Method(s) | Notes |
 |---------|-----------|-------|
-| Task sorting | | e.g., by priority, duration |
-| Filtering | | e.g., skip tasks if time runs out |
-| Conflict handling | | e.g., overlapping time slots |
-| Recurring tasks | | e.g., daily vs. weekly |
+| Task sorting | `Scheduler.sort_by_time()`, `Scheduler.sort_time_strings()` | Chronological order by `due_datetime`; string variant handles `"HH:MM"` values |
+| Filtering | `Scheduler.filter_tasks()` | Filter by completion status and/or pet name |
+| Conflict detection | `Scheduler.check_conflict()`, `Scheduler.find_conflicts()`, `Scheduler.has_conflicts()`, `Scheduler.conflict_warnings()`, `Scheduler.resolve_conflict()` | Detect, report, and auto-resolve same-time clashes |
+| Recurring tasks | `Task.next_occurrence()`, `Scheduler.complete_task()`, `Scheduler.generate_recurring_tasks()` | Daily/weekly tasks spawn their next occurrence |
+
+### Sorting behavior
+
+- **`Scheduler.sort_by_time(tasks)`** returns a list of `Task` objects sorted chronologically by their `due_datetime`. It leaves the input list unchanged (returns a new list).
+- **`Scheduler.sort_time_strings(times)`** sorts a list of `"HH:MM"` time strings using an `(hour, minute)` integer key, so it stays correct even when values aren't zero-padded (e.g. `"8:30"` sorts before `"14:05"`).
+- Related: **`Scheduler.get_upcoming_tasks()`** sorts pending tasks by `(due_datetime, priority)` and returns the next few.
+
+### Filtering behavior
+
+- **`Scheduler.filter_tasks(tasks, completed=None, pet_name=None)`** filters by completion status, pet name, or both. Each filter is optional — passing `completed=False` returns only pending tasks, `pet_name="Milo"` returns only that pet's tasks, and combining them narrows to both. Passing neither returns the list unchanged.
+
+### Conflict detection logic
+
+- **`Scheduler.check_conflict(task, owner)`** tests whether a single incoming task collides with an existing pending task at the same `due_datetime`. Used by `add_task()` before insertion.
+- **`Scheduler.find_conflicts(owner_id)`** scans the whole schedule and returns groups of tasks that share the exact same time — across the same pet *or* different pets.
+- **`Scheduler.has_conflicts(owner_id)`** is a boolean convenience wrapper over `find_conflicts()`.
+- **`Scheduler.conflict_warnings(owner_id)`** returns human-readable warning strings instead of raising, so callers can surface a warning and keep running.
+- **`Scheduler.resolve_conflict(task, owner)`** auto-resolves a clash by shifting the lower-priority task forward in fixed increments until it finds a free slot, while respecting owner/task time windows and blackout periods.
+
+### Recurring task logic
+
+- **`Task.next_occurrence()`** returns a fresh `Task` for the next occurrence, deriving the interval from `recur_interval` or from the `frequency` field (`"daily"` → +1 day, `"weekly"` → +7 days).
+- **`Scheduler.complete_task(owner_id, pet_id, task_id)`** marks a task complete and, for recurring tasks, automatically creates the next occurrence, attaches it to the pet, and logs the event.
+- **`Scheduler.generate_recurring_tasks()`** sweeps all recurring tasks and generates their next occurrences in bulk.
 
 ## 📸 Demo Walkthrough
 
