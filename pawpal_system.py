@@ -77,6 +77,8 @@ class Owner:
     name: str
     email: str
     pets: List[Pet] = field(default_factory=list)
+    # preferred_time_window is (start_hour, end_hour) in 24h format; inclusive
+    preferred_time_window: Optional[tuple[int, int]] = None
 
     def add_pet(self, pet: Pet) -> None:
         if pet not in self.pets:
@@ -187,6 +189,16 @@ class Scheduler:
             attempts = 0
             while attempts < max_attempts:
                 target.due_datetime = target.due_datetime + delta
+
+                # respect owner's preferred time window if set
+                if owner.preferred_time_window is not None:
+                    start_h, end_h = owner.preferred_time_window
+                    h = target.due_datetime.hour
+                    m = target.due_datetime.minute
+                    # allow times from start_h:00 up to end_h:00 exactly; any minutes past end_h are outside
+                    if h < start_h or h > end_h or (h == end_h and m > 0):
+                        # outside allowed window, cannot move further
+                        return False
 
                 # check for collision at new slot
                 conflict_still = False
