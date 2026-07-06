@@ -56,23 +56,48 @@ Paste a sample of your app's CLI or Streamlit output here so a reader can see wh
 
 ## 🧪 Testing PawPal+
 
-```bash
-# Run the full test suite:
-pytest
+Run the full test suite from the project root:
 
-# Run with coverage:
-pytest --cov
+```bash
+python -m pytest
 ```
 
-Sample test output:
+### What the tests cover
 
-Ran terminal command:  python3 main.py
+The suite exercises the core scheduling behaviors and their edge cases:
 
-Today's Schedule
-================
-- 12:30 | Nori | feed | Lunch feeding
-- 08:00 | Milo | walk | Morning walk
-- 18:00 | Milo | medication | Vet medicine
+- **Sorting correctness** — tasks come back in chronological order (`sort_by_time`), and `"HH:MM"` strings sort correctly even when not zero-padded (`sort_time_strings`). Also pins down that `get_upcoming_tasks` (time-then-priority) and `Task.__lt__`/the heap (priority-then-time) intentionally use different sort keys.
+- **Recurrence logic** — completing a daily task spawns the next day's occurrence; `"weekly"`/`recur_interval` variants; unsupported frequencies (e.g. `"monthly"`) return `None`; and recurring spawns respect conflict resolution and their allowed time window.
+- **Conflict detection** — same-time clashes are flagged (`check_conflict`, `find_conflicts`, `has_conflicts`), lower-priority tasks are shifted by `resolve_conflict`, and completed tasks are excluded.
+- **Time windows** — inclusive start/end boundaries, minutes past the end hour, and overnight windows that wrap past midnight (e.g. `(22, 6)`).
+- **Boundaries & safety** — empty schedules, unknown owners, all-completed schedules, and the overdue cutoff at exactly "now".
+
+A few tests are named `..._current_behavior`: these document known limitations (e.g. conflicts match exact timestamps only because there is no task-duration model, and recurring generation has no horizon) rather than endorsing them.
+
+### Sample test run
+
+```text
+============================= test session starts ==============================
+platform darwin -- Python 3.13.5, pytest-9.1.1, pluggy-1.6.0
+rootdir: /Users/sydneywhite/Documents/GitHub/ai110-module2show-pawpal-starter
+plugins: anyio-4.13.0
+collected 48 items
+
+tests/test_conflict_resolution.py ..                                     [  4%]
+tests/test_core_implementation.py ..                                     [  8%]
+tests/test_pawpal.py ....                                                [ 16%]
+tests/test_pawpal_system.py ....................................         [ 91%]
+tests/test_task_windows_and_events.py ..                                 [ 95%]
+tests/test_time_windows.py ..                                            [100%]
+
+============================== 48 passed in 0.04s ==============================
+```
+
+### Confidence level
+
+**Reliability: ★★★★☆ (4/5)**
+
+All 48 tests pass, covering sorting, recurrence, conflict detection, and time-window logic — including edge cases and three previously-latent bugs (overnight windows, and recurring spawns bypassing conflict/window checks) that are now fixed and regression-tested. The remaining star is withheld because of known, documented design gaps that are not yet addressed: conflict detection is exact-timestamp-only (no task-duration/overlap model), `generate_recurring_tasks` has no generation horizon (unbounded growth), and `sort_time_strings` does not validate that values are real clock times.
 
 
 ## 📐 Smarter Scheduling

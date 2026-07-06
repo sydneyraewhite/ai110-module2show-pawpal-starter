@@ -6,6 +6,24 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 
 
+def _clamp_into_window(dt: datetime, window: Optional[tuple[int, int]]) -> datetime:
+    """Snap dt's time-of-day into an inclusive (start_hour, end_hour) window.
+
+    Only non-overnight windows (start <= end) are clamped; when dt falls before
+    the start or after the end hour it is moved to the window's start hour on
+    the same day. Overnight windows and None are returned unchanged.
+    """
+    if window is None:
+        return dt
+    start_h, end_h = window
+    if start_h > end_h:
+        return dt
+    past_end = dt.hour > end_h or (dt.hour == end_h and dt.minute > 0)
+    if dt.hour < start_h or past_end:
+        return dt.replace(hour=start_h, minute=0, second=0, microsecond=0)
+    return dt
+
+
 @dataclass
 class Task:
     task_id: str
@@ -50,10 +68,11 @@ class Task:
         if delta is None:
             return None
 
+        next_due = _clamp_into_window(self.due_datetime + delta, self.allowed_time_window)
         return Task(
             task_id=f"{self.task_id}-next",
             task_type=self.task_type,
-            due_datetime=self.due_datetime + delta,
+            due_datetime=next_due,
             priority=self.priority,
             description=self.description,
             is_recurring=self.is_recurring,
@@ -245,8 +264,7 @@ class Scheduler:
 
         next_task = task.next_occurrence()
         if next_task is not None:
-            pet.add_task(next_task)
-            heapq.heappush(self.task_heap, next_task)
+            self._schedule_spawn(owner, pet, next_task)
             self.event_log.append({
                 "type": "recurring_spawned",
                 "task_id": next_task.task_id,
@@ -392,13 +410,21 @@ class Scheduler:
 
     @staticmethod
     def _within_window(dt: datetime, window: Optional[tuple[int, int]]) -> bool:
-        """Return True if dt falls within an inclusive (start_hour, end_hour) window."""
+        """Return True if dt falls within an inclusive (start_hour, end_hour) window.
+
+        Supports overnight windows where start_hour > end_hour (e.g. (22, 6)
+        means 22:00 through 06:00 across midnight). Minutes past the end hour
+        fall outside the inclusive end in both cases.
+        """
         if window is None:
             return True
         start_h, end_h = window
-        if dt.hour < start_h or dt.hour > end_h:
+        if dt.hour == end_h and dt.minute > 0:
             return False
-        return not (dt.hour == end_h and dt.minute > 0)
+        if start_h <= end_h:
+            return start_h <= dt.hour <= end_h
+        # Overnight: inside if at/after start OR at/before end.
+        return dt.hour >= start_h or dt.hour <= end_h
 
     def resolve_conflict(self, task: Task, owner: Owner, max_attempts: int = 10, delta: timedelta = timedelta(minutes=15)) -> bool:
         """Shift the lower-priority task forward by `delta` until a free slot is found.
@@ -457,8 +483,7 @@ class Scheduler:
                     if task.is_recurring and not task.completed:
                         next_task = task.next_occurrence()
                         if next_task is not None:
-                            pet.add_task(next_task)
-                            heapq.heappush(self.task_heap, next_task)
+                            self._schedule_spawn(owner, pet, next_task)
 
     def get_overdue_tasks(self, owner_id: str) -> List[Task]:
         owner = self._find_owner(owner_id)
@@ -471,6 +496,29 @@ class Scheduler:
             overdue.extend(task for task in pet.tasks if not task.completed and task.due_datetime < now)
         overdue.sort(key=lambda task: task)
         return overdue
+
+    def _schedule_spawn(self, owner: Owner, pet: Pet, next_task: Task) -> bool:
+        """Attach a spawned recurring task, resolving same-time conflicts first.
+
+        Unlike add_task this never raises: if no free slot can be found the task
+        is still attached (best effort) and the failure is logged, so completing
+        a task or running a recurrence pass never crashes. Returns True when the
+        task was placed without an unresolved conflict.
+        """
+        resolved = True
+        if self.check_conflict(next_task, owner):
+            resolved = self.resolve_conflict(next_task, owner)
+        pet.add_task(next_task)
+        heapq.heappush(self.task_heap, next_task)
+        if not resolved:
+            self.event_log.append({
+                "type": "recurring_conflict_unresolved",
+                "task_id": next_task.task_id,
+                "pet_id": pet.pet_id,
+                "owner_id": owner.owner_id,
+                "due_datetime": next_task.due_datetime.isoformat(),
+            })
+        return resolved
 
     def _find_owner(self, owner_id: str) -> Optional[Owner]:
         return next((owner for owner in self.owners if owner.owner_id == owner_id), None)
