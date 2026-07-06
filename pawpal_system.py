@@ -111,8 +111,11 @@ class Scheduler:
         if pet is None:
             raise ValueError(f"Pet {pet_id} not found for owner {owner_id}")
 
+        # Try to resolve conflicts automatically; if unable, raise.
         if self.check_conflict(task, owner):
-            raise ValueError("Task conflicts with an existing scheduled task")
+            resolved = self.resolve_conflict(task, owner)
+            if not resolved:
+                raise ValueError("Task conflicts with an existing scheduled task and could not be resolved")
 
         pet.add_task(task)
         heapq.heappush(self.task_heap, task)
@@ -153,6 +156,59 @@ class Scheduler:
                 if existing_task.due_datetime == task.due_datetime:
                     return True
         return False
+
+    def resolve_conflict(self, task: Task, owner: Owner, max_attempts: int = 10, delta: timedelta = timedelta(minutes=15)) -> bool:
+        """Resolve a conflict by moving the lower-priority task forward by `delta` until no collision.
+
+        Returns True if resolved, False otherwise.
+        """
+        # find tasks that collide with the requested time
+        conflicting = []
+        for pet in owner.pets:
+            for existing in pet.tasks:
+                if existing.completed:
+                    continue
+                if existing.due_datetime == task.due_datetime:
+                    conflicting.append(existing)
+
+        if not conflicting:
+            return True
+
+        for existing in conflicting:
+            # Determine which task should be moved.
+            # Lower numeric priority value means higher importance.
+            move_existing = existing.priority > task.priority
+            if existing.priority == task.priority:
+                # tie -> move the new task
+                move_existing = False
+
+            target = existing if move_existing else task
+
+            attempts = 0
+            while attempts < max_attempts:
+                target.due_datetime = target.due_datetime + delta
+
+                # check for collision at new slot
+                conflict_still = False
+                for pet2 in owner.pets:
+                    for other in pet2.tasks:
+                        if other is target or other.completed:
+                            continue
+                        if other.due_datetime == target.due_datetime:
+                            conflict_still = True
+                            break
+                    if conflict_still:
+                        break
+
+                attempts += 1
+                if not conflict_still:
+                    # if we moved an existing task, the heap needs reordering
+                    if move_existing:
+                        heapq.heapify(self.task_heap)
+                    return True
+
+            # couldn't resolve this conflict
+            return False
 
     def generate_recurring_tasks(self) -> None:
         for owner in self.owners:
