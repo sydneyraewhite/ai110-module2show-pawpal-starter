@@ -25,6 +25,7 @@ class Task:
     blackout_periods: List[tuple[datetime, datetime]] = field(default_factory=list)
 
     def __lt__(self, other: "Task") -> bool:
+        """Compare tasks by priority, due time, then id."""
         if self.priority != other.priority:
             return self.priority < other.priority
         if self.due_datetime != other.due_datetime:
@@ -32,6 +33,7 @@ class Task:
         return self.task_id < other.task_id
 
     def next_occurrence(self) -> Optional["Task"]:
+        """Return the next occurrence for a recurring task, or None."""
         if not self.is_recurring or self.recur_interval is None:
             return None
 
@@ -51,9 +53,11 @@ class Task:
         )
 
     def mark_complete(self) -> None:
+        """Mark this task as completed."""
         self.completed = True
 
     def is_overdue(self, now: Optional[datetime] = None) -> bool:
+        """Return True if the task is overdue and not completed."""
         current_time = now or datetime.now()
         return not self.completed and self.due_datetime < current_time
 
@@ -70,24 +74,29 @@ class Pet:
     owner: Optional["Owner"] = field(default=None, repr=False, compare=False)
 
     def add_task(self, task: Task) -> None:
+        """Attach a Task to this Pet and set its back-reference."""
         if task not in self.tasks:
             self.tasks.append(task)
             task.pet = self
 
     def remove_task(self, task_id: str) -> None:
+        """Remove a Task by id and clear its back-reference if present."""
         task_to_remove = next((task for task in self.tasks if task.task_id == task_id), None)
         if task_to_remove is not None:
             self.tasks.remove(task_to_remove)
             task_to_remove.pet = None
 
     def get_due_today(self) -> List[Task]:
+        """Return tasks due today for this pet."""
         today = datetime.now().date()
         return [task for task in self.tasks if task.due_datetime.date() == today]
 
     def get_pending_tasks(self) -> List[Task]:
+        """Return tasks that are not yet completed."""
         return [task for task in self.tasks if not task.completed]
 
     def get_tasks_by_type(self, task_type: str) -> List[Task]:
+        """Return tasks filtered by their task_type."""
         return [task for task in self.tasks if task.task_type == task_type]
 
 
@@ -101,26 +110,31 @@ class Owner:
     preferred_time_window: Optional[tuple[int, int]] = None
 
     def add_pet(self, pet: Pet) -> None:
+        """Add a Pet to this Owner and set the pet's owner reference."""
         if pet not in self.pets:
             self.pets.append(pet)
             pet.owner = self
 
     def remove_pet(self, pet_id: str) -> None:
+        """Remove a Pet by id and clear its owner reference."""
         pet_to_remove = next((pet for pet in self.pets if pet.pet_id == pet_id), None)
         if pet_to_remove is not None:
             self.pets.remove(pet_to_remove)
             pet_to_remove.owner = None
 
     def get_pet(self, pet_id: str) -> Optional[Pet]:
+        """Retrieve a Pet by id, or None if not found."""
         return next((pet for pet in self.pets if pet.pet_id == pet_id), None)
 
     def get_all_tasks(self) -> List[Task]:
+        """Return all tasks belonging to this owner's pets."""
         all_tasks: List[Task] = []
         for pet in self.pets:
             all_tasks.extend(pet.tasks)
         return all_tasks
 
     def get_tasks_for_today(self) -> List[Task]:
+        """Return all tasks due today across the owner's pets."""
         today = datetime.now().date()
         return [task for task in self.get_all_tasks() if task.due_datetime.date() == today]
 
@@ -131,6 +145,7 @@ class Owner:
         return tasks
 
     def get_all_pending_tasks(self) -> List[Task]:
+        """Return all pending (not completed) tasks for the owner."""
         return [task for task in self.get_all_tasks() if not task.completed]
 
 
@@ -141,6 +156,7 @@ class Scheduler:
         self.event_log: List[dict] = []
 
     def register_owner(self, owner: Owner) -> None:
+        """Register an Owner with the Scheduler."""
         if owner not in self.owners:
             self.owners.append(owner)
 
@@ -153,6 +169,7 @@ class Scheduler:
         if pet is None:
             raise ValueError(f"Pet {pet_id} not found for owner {owner_id}")
 
+        """Add a Task to the specified pet, auto-resolving conflicts when possible."""
         if self.check_conflict(task, owner):
             resolved = self.resolve_conflict(task, owner)
             if not resolved:
@@ -177,6 +194,7 @@ class Scheduler:
         if pet is None:
             return
 
+        """Remove a Task from the given owner's pet and log the event."""
         pet.remove_task(task_id)
         self.event_log.append({
             "type": "task_removed",
@@ -190,6 +208,7 @@ class Scheduler:
         if owner is None:
             return []
 
+        """Return today's tasks for the specified owner, sorted by priority/time."""
         today = datetime.now().date()
         tasks: List[Task] = []
         for pet in owner.pets:
@@ -203,6 +222,7 @@ class Scheduler:
         if owner is None:
             return []
 
+        """Return the next `limit` pending tasks for the owner, ordered by time and priority."""
         tasks = [task for task in owner.get_all_tasks() if not task.completed]
         tasks.sort(key=lambda task: (task.due_datetime, task.priority))
         return tasks[:limit]
@@ -212,6 +232,7 @@ class Scheduler:
         if owner is None:
             return []
 
+        """Return all overdue tasks for the owner, sorted by priority/time."""
         now = datetime.now()
         overdue = [task for task in owner.get_all_tasks() if task.is_overdue(now)]
         overdue.sort(key=lambda task: task)
